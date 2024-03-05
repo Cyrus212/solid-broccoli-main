@@ -1,39 +1,63 @@
-const jwt = require('jsonwebtoken');
+const { ApolloServer } = require("apollo-server-express");
+const { ApolloServerPluginDrainHttpServer } = require("apollo-server-core");
+const { makeExecutableSchema } = require("@graphql-tools/schema");
+const { WebSocketServer } = require("ws");
+const { useServer } = require("graphql-ws/lib/use/ws");
+const express = require("express");
+const http = require("http");
 
-// set token secret and expiration date
-const secret = 'mysecretsshhhhh';
-const expiration = '2h';
+// Construct a schema, using GraphQL schema language
+const typeDefs = `
+  type Query {
+    hello: String
+  }
+`;
 
-module.exports = {
-  // function for our authenticated routes
-  authMiddleware: function (req, res, next) {
-    // allows token to be sent via  req.query or headers
-    let token = req.query.token || req.headers.authorization;
-
-    // ["Bearer", "<tokenvalue>"]
-    if (req.headers.authorization) {
-      token = token.split(' ').pop().trim();
-    }
-
-    if (!token) {
-      return res.status(400).json({ message: 'You have no token!' });
-    }
-
-    // verify token and get user data out of it
-    try {
-      const { data } = jwt.verify(token, secret, { maxAge: expiration });
-      req.user = data;
-    } catch {
-      console.log('Invalid token');
-      return res.status(400).json({ message: 'invalid token!' });
-    }
-
-    // send to next endpoint
-    next();
-  },
-  signToken: function ({ username, email, _id }) {
-    const payload = { username, email, _id };
-
-    return jwt.sign({ data: payload }, secret, { expiresIn: expiration });
+// Provide resolver functions for your schema fields
+const resolvers = {
+  Query: {
+    hello: () => "Hello world!",
   },
 };
+
+const schema = makeExecutableSchema({
+  typeDefs,
+  resolvers,
+});
+
+async function startApolloServer(schema) {
+  const app = express();
+  const httpServer = http.createServer(app);
+
+  const wsServer = new WebSocketServer({
+    server: httpServer,
+    path: "/graphql",
+  });
+
+  const serverCleanup = useServer({ schema }, wsServer);
+
+  const server = new ApolloServer({
+    schema,
+    plugins: [
+      ApolloServerPluginDrainHttpServer({ httpServer }),
+      {
+        async serverWillStart() {
+          return {
+            async drainServer() {
+              await serverCleanup.dispose();
+            },
+          };
+        },
+      },
+    ],
+  });
+
+  await server.start();
+
+  server.applyMiddleware({ app });
+
+  await new Promise((resolve) => httpServer.listen({ port: 4000 }, resolve));
+  console.log(`🚀 Server ready at http://localhost:4000${server.graphqlPath}`);
+}
+
+startApolloServer(schema);
